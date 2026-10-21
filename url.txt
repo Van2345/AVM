@@ -1,0 +1,3 @@
+http://localhost/phpadmin/
+http://localhost/assistance-management/
+username: admin        password: Admin@12345

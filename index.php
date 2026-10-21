@@ -1,0 +1,409 @@
+ B<?php
+require_once __DIR__ . '/config/helpers.php';
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Cache-Control: no-store, no-cache, must-revalidate');
+
+function h($v): string
+{
+    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+}
+
+function icon(string $name): string
+{
+    $paths = [
+        'dash'      => '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
+        'mapview'   => '<path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+        'request'   => '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+        'volunteer' => '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 3-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14.5c2 .6 3.5 2.4 3.5 5.5"/>',
+        'manage'    => '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+        'logout'    => '<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>',
+    ];
+    return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . ($paths[$name] ?? '') . '</svg>';
+}
+
+$user = null;
+try {
+    $user = refresh_session_user();
+} catch (Throwable $e) {
+    error_log($e->getMessage());
+    http_response_code(500);
+    ?><!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Database connection failed</title><link rel="stylesheet" href="css/style.css"></head>
+<body><div class="auth-wrap"><div class="auth-card card">
+<h2>Database connection failed.</h2>
+<p class="muted" style="margin-top:8px">Make sure MySQL is running in the XAMPP Control Panel and that
+<b>database/database.sql</b> was imported in phpMyAdmin. Then refresh this page.</p>
+</div></div></body></html>
+<?php
+    exit;
+}
+
+$role = $user['role'] ?? '';
+$menu = ['dash' => 'Dashboard', 'mapview' => 'Live Map'];
+if (in_array($role, ['ADMIN', 'REQUESTER'], true)) {
+    $menu['request'] = 'Request Help';
+}
+if ($role === 'ADMIN') {
+    $menu['volunteer'] = 'Volunteers';
+    $menu['manage']    = 'Manage';
+}
+$dashTitle = ['ADMIN' => 'Admin Dashboard', 'VOLUNTEER' => 'Volunteer Dashboard', 'REQUESTER' => 'Requester Dashboard'][$role] ?? 'Dashboard';
+
+$appData = [
+    'csrf' => $_SESSION['csrf'],
+    'user' => $user ? ['id' => $user['id'], 'name' => $user['full_name'], 'role' => $user['role']] : null,
+    'dashTitle' => $dashTitle,
+    'menu' => $menu,
+];
+?><!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Assistance and Volunteer Management - ICCT Antipolo Campus</title>
+<script>
+(function () {
+  var t = 'dark';
+  try { t = localStorage.getItem('theme') || 'dark'; } catch (e) {}
+  document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+})();
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+<?php if ($user): ?>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<?php endif; ?>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<?php if (!$user): ?>
+
+<div class="split">
+  <aside class="split-art">
+    <div class="art-text">
+      <p class="eyebrow">ICCT ANTIPOLO CAMPUS</p>
+      <h1>Assistance <span>Volunteer Management</span></h1>
+      <p class="lead">Request help, match it with available volunteers, and follow every request on the campus map from start to finish.</p>
+    </div>
+    <svg class="art-svg" viewBox="0 0 560 440" role="img" aria-label="Illustration of volunteers helping students on campus with a request card and live map">
+      <defs>
+        <radialGradient id="aGlow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ffffff" stop-opacity=".28"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+      </defs>
+      <circle cx="280" cy="215" r="205" fill="url(#aGlow)"/>
+      <ellipse cx="280" cy="398" rx="245" ry="22" fill="#1e1b4b" opacity=".28"/>
+      <!-- campus building -->
+      <rect x="150" y="196" width="260" height="196" rx="8" fill="#ede9fe"/>
+      <rect x="132" y="178" width="296" height="24" rx="6" fill="#c4b5fd"/>
+      <polygon points="280,118 132,178 428,178" fill="#5b21b6"/>
+      <circle cx="280" cy="156" r="10" fill="#ede9fe"/>
+      <line x1="280" y1="118" x2="280" y2="86" stroke="#ede9fe" stroke-width="3"/>
+      <polygon points="280,86 312,95 280,104" fill="#f472b6"/>
+      <g fill="#c4b5fd">
+        <rect x="172" y="216" width="14" height="150" rx="4"/><rect x="214" y="216" width="14" height="150" rx="4"/>
+        <rect x="332" y="216" width="14" height="150" rx="4"/><rect x="374" y="216" width="14" height="150" rx="4"/>
+      </g>
+      <g fill="#7c3aed" opacity=".85">
+        <rect x="240" y="222" width="24" height="30" rx="4"/><rect x="296" y="222" width="24" height="30" rx="4"/>
+        <rect x="240" y="266" width="24" height="30" rx="4"/><rect x="296" y="266" width="24" height="30" rx="4"/>
+      </g>
+      <rect x="258" y="322" width="44" height="70" rx="8" fill="#5b21b6"/>
+      <circle cx="294" cy="358" r="3" fill="#ede9fe"/>
+      <!-- map card -->
+      <g transform="translate(22 72)">
+        <rect width="168" height="122" rx="16" fill="#ffffff"/>
+        <rect x="10" y="10" width="148" height="102" rx="10" fill="#ede9fe"/>
+        <path d="M10 46h148M10 78h148M52 10v102M104 10v102" stroke="#ddd6fe" stroke-width="3"/>
+        <path d="M28 96 C56 90 66 60 96 58 S128 44 140 28" fill="none" stroke="#7c3aed" stroke-width="3" stroke-dasharray="6 5" stroke-linecap="round"/>
+        <circle cx="28" cy="96" r="6" fill="#10b981"/>
+        <path d="M140 12c-8 0-14 6-14 14 0 10 14 24 14 24s14-14 14-24c0-8-6-14-14-14z" fill="#ef4444"/>
+        <circle cx="140" cy="26" r="5" fill="#ffffff"/>
+      </g>
+      <!-- request card -->
+      <g transform="translate(378 48)">
+        <rect width="160" height="112" rx="16" fill="#ffffff"/>
+        <rect x="14" y="16" width="70" height="9" rx="4.5" fill="#4c1d95"/>
+        <rect x="14" y="34" width="118" height="7" rx="3.5" fill="#ddd6fe"/>
+        <rect x="14" y="48" width="96" height="7" rx="3.5" fill="#ddd6fe"/>
+        <rect x="14" y="70" width="60" height="24" rx="12" fill="#fef9c3"/>
+        <rect x="24" y="78" width="40" height="8" rx="4" fill="#ca8a04"/>
+        <circle cx="128" cy="82" r="16" fill="#10b981"/>
+        <path d="M120 82l6 6 11-12" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <!-- heart badge -->
+      <g transform="translate(232 246)">
+        <circle cx="48" cy="-12" r="0" fill="none"/>
+      </g>
+      <g transform="translate(446 218)">
+        <circle r="26" fill="#f472b6"/>
+        <path d="M0 11C-16 0 -14 -12 -7 -12c4 0 7 3 7 6 0-3 3-6 7-6 7 0 9 12-7 23z" fill="#ffffff"/>
+      </g>
+      <!-- volunteer 1 -->
+      <g>
+        <rect x="88" y="336" width="42" height="58" rx="16" fill="#10b981"/>
+        <rect x="100" y="336" width="18" height="58" fill="#ecfdf5" opacity=".9"/>
+        <circle cx="109" cy="314" r="18" fill="#fcd5b5"/>
+        <path d="M91 311c0-12 8-19 18-19s18 7 18 19c-6-6-30-6-36 0z" fill="#3f2a1d"/>
+        <path d="M130 348l32-30" stroke="#fcd5b5" stroke-width="10" stroke-linecap="round"/>
+      </g>
+      <!-- volunteer 2 -->
+      <g>
+        <rect x="436" y="332" width="44" height="62" rx="16" fill="#f97316"/>
+        <rect x="449" y="332" width="18" height="62" fill="#fff7ed" opacity=".9"/>
+        <circle cx="458" cy="309" r="18" fill="#e0ac84"/>
+        <path d="M440 306c0-13 8-20 18-20s18 7 18 20c-4-7-32-7-36 0z" fill="#111827"/>
+        <path d="M436 350l-30-22" stroke="#e0ac84" stroke-width="10" stroke-linecap="round"/>
+      </g>
+      <!-- student -->
+      <g>
+        <rect x="336" y="348" width="34" height="46" rx="14" fill="#38bdf8"/>
+        <circle cx="353" cy="330" r="15" fill="#fcd5b5"/>
+        <path d="M338 328c0-10 6-16 15-16s15 6 15 16c-5-5-25-5-30 0z" fill="#7c2d12"/>
+      </g>
+    </svg>
+    <div class="pills"><span>Request help</span><span>Live campus map</span><span>Volunteer matching</span><span>Status tracking</span></div>
+  </aside>
+  <div class="split-form">
+  <div class="auth-card card">
+    <div class="auth-brand">
+      <h2>Welcome</h2>
+      <p>Log in, or create a requester account.</p>
+    </div>
+    <div class="tabs">
+      <button type="button" class="tab active" data-auth-tab="login">Login</button>
+      <button type="button" class="tab" data-auth-tab="register">Register</button>
+    </div>
+    <div id="authMsg" class="auth-msg" role="alert"></div>
+
+    <form id="loginForm" novalidate>
+      <label for="l_user">Username</label>
+      <input id="l_user" autocomplete="username" maxlength="30">
+      <label for="l_pass">Password</label>
+      <input id="l_pass" type="password" autocomplete="current-password">
+      <button class="btn btn-violet btn-block" type="submit">Login</button>
+    </form>
+
+    <form id="registerForm" novalidate hidden>
+      <label for="r_name">Full name</label>
+      <input id="r_name" maxlength="100" autocomplete="name">
+      <div class="row">
+        <div><label for="r_user">Username</label><input id="r_user" maxlength="30" autocomplete="username"></div>
+        <div><label for="r_email">Email (optional)</label><input id="r_email" type="email" maxlength="120" autocomplete="email"></div>
+      </div>
+      <div class="row">
+        <div><label for="r_pass">Password</label><input id="r_pass" type="password" autocomplete="new-password"></div>
+        <div><label for="r_conf">Confirm password</label><input id="r_conf" type="password" autocomplete="new-password"></div>
+      </div>
+      <button class="btn btn-violet btn-block" type="submit">Create requester account</button>
+      <p class="muted small">Registration creates a Requester account. Volunteer accounts are created by the administrator.</p>
+    </form>
+
+    <div class="theme-row"><span>Dark mode</span><span class="switch" role="switch" tabindex="0" aria-label="Toggle dark mode" onclick="toggleTheme()"></span></div>
+  </div>
+  </div>
+</div>
+
+<?php else: ?>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div>
+      <div class="side-top">
+        <div>
+          <h1>Assistance <span>Volunteer Management</span></h1>
+          <p class="campus">ICCT ANTIPOLO CAMPUS</p>
+        </div>
+        <button type="button" class="nav-toggle" aria-label="Open menu" onclick="document.getElementById('sidebar').classList.toggle('open')"><i></i><i></i><i></i></button>
+      </div>
+      <nav class="menu">
+        <?php foreach ($menu as $key => $label): ?>
+        <button type="button" id="m_<?= h($key) ?>" class="<?= $key === 'dash' ? 'active' : '' ?>" onclick="show('<?= h($key) ?>')"><?= icon($key) ?><span><?= h($label) ?></span></button>
+        <?php endforeach; ?>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="user-chip">
+        <div class="avatar"><?= h(mb_strtoupper(mb_substr($user['full_name'], 0, 1))) ?></div>
+        <div><b><?= h($user['full_name']) ?></b><small><?= h(ucfirst(strtolower($role))) ?></small></div>
+      </div>
+      <div class="theme-row dark-row"><span>Dark mode</span><span class="switch" role="switch" tabindex="0" aria-label="Toggle dark mode" onclick="toggleTheme()"></span></div>
+      <button type="button" class="btn btn-ghost btn-block logout" id="logoutBtn"><?= icon('logout') ?> Logout</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h2 id="pageTitle"><?= h($dashTitle) ?></h2>
+        <p class="muted small" id="todayLabel"></p>
+      </div>
+      <span class="tag role-tag"><?= h($role) ?></span>
+    </div>
+
+    <!-- DASHBOARD -->
+    <section class="page active" id="p_dash">
+      <div class="kpi">
+        <div class="kpi-card"><h4>Total Requests</h4><b id="k_total">0</b></div>
+        <div class="kpi-card"><h4>Pending</h4><b id="k_pending">0</b></div>
+        <div class="kpi-card"><h4>Approved</h4><b id="k_approved">0</b></div>
+        <div class="kpi-card"><h4>Assigned</h4><b id="k_assigned">0</b></div>
+        <div class="kpi-card"><h4>Ongoing</h4><b id="k_ongoing">0</b></div>
+        <div class="kpi-card"><h4>Completed</h4><b id="k_done">0</b></div>
+        <div class="kpi-card"><h4>Total Volunteers</h4><b id="k_vol">0</b></div>
+        <div class="kpi-card"><h4>Available Volunteers</h4><b id="k_avail">0</b></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h3>Recent Requests</h3>
+          <div class="table-wrap">
+            <table class="rt">
+              <thead><tr><th>Request ID</th><th>Requester</th><th>Type</th><th>Location</th><th>Urgency</th><th>Status</th><th>Volunteer</th><th>Actions</th></tr></thead>
+              <tbody id="dashReq"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Recent Activity</h3>
+          <div id="actList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIVE MAP -->
+    <section class="page" id="p_mapview">
+      <div class="card">
+        <h3>Live Map</h3>
+        <div id="map"></div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </section>
+
+<?php if (isset($menu['request'])): ?>
+    <!-- REQUEST HELP -->
+    <section class="page" id="p_request">
+      <div class="card">
+        <h3>Request Help</h3>
+        <form id="reqForm" novalidate>
+          <div class="row">
+            <div class="field"><label for="rq_name">Requester name *</label><input id="rq_name" maxlength="100" value="<?= h($user['full_name']) ?>"></div>
+            <div class="field"><label for="rq_contact">Contact number *</label><input id="rq_contact" maxlength="20" placeholder="09XXXXXXXXX" inputmode="tel"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label for="rq_type">Assistance type *</label>
+              <select id="rq_type">
+                <option value="">Select type</option>
+                <option>Medical Assistance</option><option>Emergency Assistance</option><option>Transportation</option>
+                <option>Campus Assistance</option><option>Lost and Found</option><option>Other</option>
+              </select></div>
+            <div class="field"><label for="rq_urgency">Urgency *</label>
+              <select id="rq_urgency"><option>Low</option><option>Medium</option><option>High</option><option>Emergency</option></select></div>
+          </div>
+          <div class="row">
+            <div class="field"><label for="rq_location">Location *</label><input id="rq_location" maxlength="255" placeholder="Building, room or landmark"></div>
+            <div class="field"><label for="rq_time">Date / time needed *</label><input id="rq_time" type="datetime-local"></div>
+          </div>
+          <div class="field"><label for="rq_desc">Description *</label><textarea id="rq_desc" rows="4" maxlength="2000" placeholder="Describe what help is needed"></textarea></div>
+
+          <label>Pin the location on the map (optional)</label>
+          <div id="pickMap"></div>
+          <div class="row three">
+            <div class="field"><label for="rq_lat">Latitude</label><input id="rq_lat" readonly></div>
+            <div class="field"><label for="rq_lng">Longitude</label><input id="rq_lng" readonly></div>
+            <div class="field pin-btns"><button type="button" class="btn btn-ghost" id="useGps">Use my location</button><button type="button" class="btn btn-ghost" id="clearPin">Clear pin</button></div>
+          </div>
+          <div id="reqMsg" class="auth-msg" role="alert"></div>
+          <button class="btn btn-violet" type="submit" id="reqSubmit">Submit request</button>
+        </form>
+      </div>
+    </section>
+<?php endif; ?>
+
+<?php if ($role === 'ADMIN'): ?>
+    <!-- VOLUNTEERS -->
+    <section class="page" id="p_volunteer">
+      <div class="card">
+        <div class="toolbar">
+          <h3>Volunteers</h3>
+          <button type="button" class="btn btn-violet" id="addVolunteer">Add volunteer</button>
+        </div>
+        <div class="toolbar">
+          <input id="vSearch" class="search" placeholder="Search by ID, name, skill or contact">
+          <div class="chips" id="vChips"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="rt">
+            <thead><tr><th>ID</th><th>Name</th><th>Contact</th><th>Skill / Role</th><th>Availability</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="volBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- MANAGE -->
+    <section class="page" id="p_manage">
+      <div class="card">
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="req">Requests</button>
+          <button type="button" class="tab" data-tab="users">Users</button>
+          <button type="button" class="tab" data-tab="logs">Activity Logs</button>
+        </div>
+
+        <div class="tabpane" id="tab_req">
+          <div class="toolbar">
+            <input id="mSearch" class="search" placeholder="Search by request ID, requester, type or location">
+          </div>
+          <div class="chips" id="mChips"></div>
+          <div class="table-wrap">
+            <table class="rt">
+              <thead><tr><th>Request ID</th><th>Requester</th><th>Type</th><th>Location</th><th>Urgency</th><th>Status</th><th>Volunteer</th><th>Actions</th></tr></thead>
+              <tbody id="manageReq"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tabpane" id="tab_users" hidden>
+          <div class="table-wrap">
+            <table class="rt">
+              <thead><tr><th>ID</th><th>Name</th><th>Username</th><th>Email</th><th>Role</th><th>Account</th><th>Actions</th></tr></thead>
+              <tbody id="userBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tabpane" id="tab_logs" hidden>
+          <div class="table-wrap">
+            <table class="rt">
+              <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Details</th></tr></thead>
+              <tbody id="logBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+<?php endif; ?>
+  </main>
+</div>
+
+<!-- Modal + toasts -->
+<div class="modal" id="modal" aria-hidden="true">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <div class="modal-head"><h3 id="mTitle"></h3><button type="button" class="x" id="mClose" aria-label="Close">&times;</button></div>
+    <div class="modal-body" id="mBody"></div>
+    <div class="modal-foot" id="mFoot"></div>
+  </div>
+</div>
+<div id="toasts" aria-live="polite"></div>
+
+<?php endif; ?>
+
+<script>
+window.APP = <?= json_encode($appData, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?>;
+</script>
+<?php if ($user): ?>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<?php endif; ?>
+<script src="js/app.js"></script>
+</body>
+</html>

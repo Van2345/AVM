@@ -1,5 +1,5 @@
 /* Assistance and Volunteer Management - ICCT Antipolo Campus
- * Frontend logic: navigation, theme, forms, fetch() calls to PHP, map, modals. */
+ * Frontend logic: navigation, theme, forms, fetch() calls to Django, map, modals. */
 (function () {
 'use strict';
 
@@ -45,7 +45,7 @@ async function api(url, opts = {}) {
     res = await fetch(url, init);
     data = await res.json();
   } catch (e) {
-    return { success: false, message: 'Unable to reach the server. Make sure Apache and MySQL are running in XAMPP.' };
+    return { success: false, message: 'Unable to reach the application server.' };
   }
   if (res.status === 401 && APP.user) { location.reload(); }
   return data;
@@ -124,7 +124,7 @@ if (!APP.user) {
     const password = $('#l_pass').value;
     if (!username || !password) return setMsg('Please complete all required fields.', false);
     const btn = $('button[type=submit]', e.target); btn.disabled = true;
-    const res = await api('auth/login.php', { method: 'POST', body: { username, password } });
+    const res = await api('/api/auth/login/', { method: 'POST', body: { username, password } });
     btn.disabled = false;
     if (res.success) { history.replaceState(null, '', location.pathname); location.reload(); }
     else setMsg(res.message || 'Invalid login credentials.', false);
@@ -141,7 +141,7 @@ if (!APP.user) {
     if (body.password.length < 8) return setMsg('Password must be at least 8 characters.', false);
     if (body.password !== body.confirm) return setMsg('Passwords do not match.', false);
     const btn = $('button[type=submit]', e.target); btn.disabled = true;
-    const res = await api('auth/register.php', { method: 'POST', body });
+    const res = await api('/api/auth/register/', { method: 'POST', body });
     btn.disabled = false;
     if (res.success) { e.target.reset(); setTab('login'); setMsg(res.message, true); }
     else setMsg(res.message || 'Unable to save data.', false);
@@ -207,7 +207,7 @@ window.show = function (name) {
 const refresh = () => { if (loaders[current]) loaders[current](); };
 
 $('#logoutBtn').addEventListener('click', async () => {
-  await api('auth/logout.php', { method: 'POST', body: {} });
+  await api('/api/auth/logout/', { method: 'POST', body: {} });
   history.replaceState(null, '', location.pathname);
   location.reload();
 });
@@ -280,7 +280,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'assign') return openAssign(r);
   if (CONFIRMS[act] && !(await confirmBox(CONFIRMS[act].replace('{c}', r.request_code), cap(act)))) return;
   btn.disabled = true;
-  const res = await api(act === 'delete' ? 'requests/delete.php' : 'requests/update.php', { method: 'POST', body: { id, action: act } });
+  const res = await api(act === 'delete' ? '/api/requests/delete/' : '/api/requests/update/', { method: 'POST', body: { id, action: act } });
   if (res.success) { toast(res.message); refresh(); } else { toast(res.message || 'Unable to save data.', 'err'); btn.disabled = false; }
 });
 
@@ -294,7 +294,7 @@ function showRequest(r) {
     row('Description', esc(r.description).replace(/\n/g, '<br>')) + '</dl>');
 }
 async function openAssign(r) {
-  const res = await api('volunteers/get.php?status=AVAILABLE');
+  const res = await api('/api/volunteers/?status=AVAILABLE');
   if (!res.success) return toast(res.message, 'err');
   if (!res.volunteers.length) {
     return openModal('Assign volunteer', '<p class="muted">No volunteers are available right now. Set a volunteer to Available in the Volunteers page first.</p>');
@@ -308,7 +308,7 @@ async function openAssign(r) {
       const sel = $('input[name=vol]:checked', $('#mBody'));
       if (!sel) return toast('Please select a volunteer.', 'err');
       el.disabled = true;
-      const out = await api('requests/update.php', { method: 'POST', body: { id: r.id, action: 'assign', volunteer_id: Number(sel.value) } });
+      const out = await api('/api/requests/update/', { method: 'POST', body: { id: r.id, action: 'assign', volunteer_id: Number(sel.value) } });
       if (out.success) { closeModal(); toast(out.message); refresh(); } else { toast(out.message, 'err'); el.disabled = false; }
     } },
   ]);
@@ -316,7 +316,7 @@ async function openAssign(r) {
 
 /* ---------- dashboard ---------- */
 async function loadDashboard() {
-  const [s, r] = await Promise.all([api('admin/dashboard.php?action=stats'), api('requests/get.php?limit=8')]);
+  const [s, r] = await Promise.all([api('/api/admin/dashboard/?action=stats'), api('/api/requests/?limit=8')]);
   if (s.success) {
     const v = s.volunteers, t = s.stats;
     const map = { k_total: t.total, k_pending: t.pending, k_approved: t.approved, k_assigned: t.assigned, k_ongoing: t.ongoing, k_done: t.done, k_vol: v.total, k_avail: v.available };
@@ -357,8 +357,8 @@ function initMap() {
 async function loadMap() {
   if (!initMap()) return;
   setTimeout(() => map.invalidateSize(), 120);
-  const jobs = [api('requests/get.php?map=1')];
-  if (ROLE === 'ADMIN') jobs.push(api('volunteers/get.php?map=1'));
+  const jobs = [api('/api/requests/?map=1')];
+  if (ROLE === 'ADMIN') jobs.push(api('/api/volunteers/?map=1'));
   const [rq, vl] = await Promise.all(jobs);
   layerReq.clearLayers(); layerVol.clearLayers();
   if (rq && rq.success) {
@@ -434,7 +434,7 @@ if ($('#reqForm')) {
     }
     msg.textContent = ''; msg.className = 'auth-msg';
     const btn = $('#reqSubmit'); btn.disabled = true;
-    const res = await api('requests/create.php', { method: 'POST', body: f });
+    const res = await api('/api/requests/create/', { method: 'POST', body: f });
     btn.disabled = false;
     if (res.success) {
       toast(res.message + ' Your Request ID is ' + res.request_code + '.');
@@ -449,7 +449,7 @@ let vFilter = 'ALL';
 async function loadVolunteers() {
   if (!$('#vChips').children.length) renderChips($('#vChips'), ['ALL'].concat(VSTATUSES), vFilter, (v) => { vFilter = v; loadVolunteers(); });
   const q = $('#vSearch').value.trim();
-  const res = await api('volunteers/get.php?q=' + encodeURIComponent(q) + (vFilter !== 'ALL' ? '&status=' + vFilter : ''));
+  const res = await api('/api/volunteers/?q=' + encodeURIComponent(q) + (vFilter !== 'ALL' ? '&status=' + vFilter : ''));
   if (!res.success) return toast(res.message, 'err');
   volCache.clear();
   $('#volBody').innerHTML = res.volunteers.length ? res.volunteers.map((v) => {
@@ -491,7 +491,7 @@ function openVolunteerModal(v) {
       if (!CONTACT_RE.test(body.contact)) return toast('Please enter a valid contact number.', 'err');
       if (v.id) body.id = v.id;
       el.disabled = true;
-      const res = await api(v.id ? 'volunteers/update.php' : 'volunteers/create.php', { method: 'POST', body });
+      const res = await api(v.id ? '/api/volunteers/update/' : '/api/volunteers/create/', { method: 'POST', body });
       if (res.success) { closeModal(); toast(res.message); loadVolunteers(); } else { toast(res.message || 'Unable to save data.', 'err'); el.disabled = false; }
     } },
   ]);
@@ -501,7 +501,7 @@ if ($('#p_volunteer')) {
   $('#vSearch').addEventListener('input', debounce(loadVolunteers));
   $('#volBody').addEventListener('change', async (e) => {
     const sel = e.target.closest('[data-vstatus]'); if (!sel) return;
-    const res = await api('volunteers/update.php', { method: 'POST', body: { id: Number(sel.dataset.vstatus), action: 'status', status: sel.value } });
+    const res = await api('/api/volunteers/update/', { method: 'POST', body: { id: Number(sel.dataset.vstatus), action: 'status', status: sel.value } });
     toast(res.message || 'Unable to save data.', res.success ? undefined : 'err');
     if (!res.success) loadVolunteers();
   });
@@ -510,7 +510,7 @@ if ($('#p_volunteer')) {
     const v = volCache.get(Number(b.dataset.id)); if (!v) return;
     if (b.dataset.vact === 'edit') return openVolunteerModal(v);
     if (!(await confirmBox('Delete volunteer ' + v.volunteer_code + ' (' + v.full_name + ')? Their login account will also be removed.', 'Delete'))) return;
-    const res = await api('volunteers/delete.php', { method: 'POST', body: { id: v.id } });
+    const res = await api('/api/volunteers/delete/', { method: 'POST', body: { id: v.id } });
     toast(res.message || 'Unable to save data.', res.success ? undefined : 'err');
     if (res.success) loadVolunteers();
   });
@@ -524,10 +524,10 @@ async function loadManage() {
   $$('[data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === mTab));
   if (mTab === 'req') {
     const q = $('#mSearch').value.trim();
-    const res = await api('requests/get.php?q=' + encodeURIComponent(q) + (mFilter !== 'ALL' ? '&status=' + mFilter : ''));
+    const res = await api('/api/requests/?q=' + encodeURIComponent(q) + (mFilter !== 'ALL' ? '&status=' + mFilter : ''));
     if (res.success) $('#manageReq').innerHTML = requestRows(res.requests, true);
   } else if (mTab === 'users') {
-    const res = await api('admin/dashboard.php?action=users');
+    const res = await api('/api/admin/dashboard/?action=users');
     if (!res.success) return;
     $('#userBody').innerHTML = res.users.map((u) => {
       const self = u.id === APP.user.id, on = Number(u.is_active) === 1;
@@ -538,7 +538,7 @@ async function loadManage() {
           '<button type="button" class="btn btn-sm ' + (on ? 'btn-ghost' : 'btn-violet') + '" data-toggle-user="' + u.id + '">' + (on ? 'Disable' : 'Enable') + '</button>') + '</td></tr>';
     }).join('');
   } else {
-    const res = await api('admin/dashboard.php?action=logs');
+    const res = await api('/api/admin/dashboard/?action=logs');
     if (!res.success) return;
     $('#logBody').innerHTML = res.logs.length ? res.logs.map((l) =>
       '<tr><td data-label="Time">' + fmtDate(l.created_at) + '</td><td data-label="User">' + esc(l.full_name || 'System') + '</td>' +
@@ -552,7 +552,7 @@ if ($('#p_manage')) {
   $('#userBody').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-toggle-user]'); if (!b) return;
     b.disabled = true;
-    const res = await api('admin/dashboard.php', { method: 'POST', body: { action: 'toggle_user', id: Number(b.dataset.toggleUser) } });
+    const res = await api('/api/admin/dashboard/', { method: 'POST', body: { action: 'toggle_user', id: Number(b.dataset.toggleUser) } });
     toast(res.message || 'Unable to save data.', res.success ? undefined : 'err');
     loadManage();
   });

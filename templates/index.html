@@ -1,65 +1,5 @@
- B<?php
-require_once __DIR__ . '/config/helpers.php';
-
-header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: SAMEORIGIN');
-header('Referrer-Policy: strict-origin-when-cross-origin');
-header('Cache-Control: no-store, no-cache, must-revalidate');
-
-function h($v): string
-{
-    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
-}
-
-function icon(string $name): string
-{
-    $paths = [
-        'dash'      => '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
-        'mapview'   => '<path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
-        'request'   => '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
-        'volunteer' => '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 3-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14.5c2 .6 3.5 2.4 3.5 5.5"/>',
-        'manage'    => '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
-        'logout'    => '<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>',
-    ];
-    return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . ($paths[$name] ?? '') . '</svg>';
-}
-
-$user = null;
-try {
-    $user = refresh_session_user();
-} catch (Throwable $e) {
-    error_log($e->getMessage());
-    http_response_code(500);
-    ?><!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Database connection failed</title><link rel="stylesheet" href="css/style.css"></head>
-<body><div class="auth-wrap"><div class="auth-card card">
-<h2>Database connection failed.</h2>
-<p class="muted" style="margin-top:8px">Make sure MySQL is running in the XAMPP Control Panel and that
-<b>database/database.sql</b> was imported in phpMyAdmin. Then refresh this page.</p>
-</div></div></body></html>
-<?php
-    exit;
-}
-
-$role = $user['role'] ?? '';
-$menu = ['dash' => 'Dashboard', 'mapview' => 'Live Map'];
-if (in_array($role, ['ADMIN', 'REQUESTER'], true)) {
-    $menu['request'] = 'Request Help';
-}
-if ($role === 'ADMIN') {
-    $menu['volunteer'] = 'Volunteers';
-    $menu['manage']    = 'Manage';
-}
-$dashTitle = ['ADMIN' => 'Admin Dashboard', 'VOLUNTEER' => 'Volunteer Dashboard', 'REQUESTER' => 'Requester Dashboard'][$role] ?? 'Dashboard';
-
-$appData = [
-    'csrf' => $_SESSION['csrf'],
-    'user' => $user ? ['id' => $user['id'], 'name' => $user['full_name'], 'role' => $user['role']] : null,
-    'dashTitle' => $dashTitle,
-    'menu' => $menu,
-];
-?><!DOCTYPE html>
+{% load static %}
+<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
@@ -73,13 +13,13 @@ $appData = [
 })();
 </script>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
-<?php if ($user): ?>
+{% if user %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<?php endif; ?>
-<link rel="stylesheet" href="css/style.css">
+{% endif %}
+<link rel="stylesheet" href="{% static 'style.css' %}">
 </head>
 <body>
-<?php if (!$user): ?>
+{% if not user %}
 
 <div class="split">
   <aside class="split-art">
@@ -205,7 +145,7 @@ $appData = [
   </div>
 </div>
 
-<?php else: ?>
+{% else %}
 
 <div class="app">
   <aside class="sidebar" id="sidebar">
@@ -218,28 +158,28 @@ $appData = [
         <button type="button" class="nav-toggle" aria-label="Open menu" onclick="document.getElementById('sidebar').classList.toggle('open')"><i></i><i></i><i></i></button>
       </div>
       <nav class="menu">
-        <?php foreach ($menu as $key => $label): ?>
-        <button type="button" id="m_<?= h($key) ?>" class="<?= $key === 'dash' ? 'active' : '' ?>" onclick="show('<?= h($key) ?>')"><?= icon($key) ?><span><?= h($label) ?></span></button>
-        <?php endforeach; ?>
+        {% for item in menu %}
+        <button type="button" id="m_{{ item.key }}" class="{% if item.key == 'dash' %}active{% endif %}" onclick="show('{{ item.key }}')">{{ item.icon }}<span>{{ item.label }}</span></button>
+        {% endfor %}
       </nav>
     </div>
     <div class="side-foot">
       <div class="user-chip">
-        <div class="avatar"><?= h(mb_strtoupper(mb_substr($user['full_name'], 0, 1))) ?></div>
-        <div><b><?= h($user['full_name']) ?></b><small><?= h(ucfirst(strtolower($role))) ?></small></div>
+        <div class="avatar">{{ avatar_initial }}</div>
+        <div><b>{{ user.full_name }}</b><small>{{ role|title }}</small></div>
       </div>
       <div class="theme-row dark-row"><span>Dark mode</span><span class="switch" role="switch" tabindex="0" aria-label="Toggle dark mode" onclick="toggleTheme()"></span></div>
-      <button type="button" class="btn btn-ghost btn-block logout" id="logoutBtn"><?= icon('logout') ?> Logout</button>
+      <button type="button" class="btn btn-ghost btn-block logout" id="logoutBtn">{{ logout_icon }} Logout</button>
     </div>
   </aside>
 
   <main class="main">
     <div class="topbar">
       <div>
-        <h2 id="pageTitle"><?= h($dashTitle) ?></h2>
+        <h2 id="pageTitle">{{ dash_title }}</h2>
         <p class="muted small" id="todayLabel"></p>
       </div>
-      <span class="tag role-tag"><?= h($role) ?></span>
+      <span class="tag role-tag">{{ role }}</span>
     </div>
 
     <!-- DASHBOARD -->
@@ -280,14 +220,14 @@ $appData = [
       </div>
     </section>
 
-<?php if (isset($menu['request'])): ?>
+{% if show_request %}
     <!-- REQUEST HELP -->
     <section class="page" id="p_request">
       <div class="card">
         <h3>Request Help</h3>
         <form id="reqForm" novalidate>
           <div class="row">
-            <div class="field"><label for="rq_name">Requester name *</label><input id="rq_name" maxlength="100" value="<?= h($user['full_name']) ?>"></div>
+            <div class="field"><label for="rq_name">Requester name *</label><input id="rq_name" maxlength="100" value="{{ user.full_name }}"></div>
             <div class="field"><label for="rq_contact">Contact number *</label><input id="rq_contact" maxlength="20" placeholder="09XXXXXXXXX" inputmode="tel"></div>
           </div>
           <div class="row">
@@ -318,9 +258,9 @@ $appData = [
         </form>
       </div>
     </section>
-<?php endif; ?>
+{% endif %}
 
-<?php if ($role === 'ADMIN'): ?>
+{% if is_admin %}
     <!-- VOLUNTEERS -->
     <section class="page" id="p_volunteer">
       <div class="card">
@@ -382,7 +322,7 @@ $appData = [
         </div>
       </div>
     </section>
-<?php endif; ?>
+{% endif %}
   </main>
 </div>
 
@@ -396,14 +336,13 @@ $appData = [
 </div>
 <div id="toasts" aria-live="polite"></div>
 
-<?php endif; ?>
+{% endif %}
 
-<script>
-window.APP = <?= json_encode($appData, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?>;
-</script>
-<?php if ($user): ?>
+{{ app_data|json_script:"app-data" }}
+<script>window.APP = JSON.parse(document.getElementById('app-data').textContent);</script>
+{% if user %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<?php endif; ?>
-<script src="js/app.js"></script>
+{% endif %}
+<script src="{% static 'app.js' %}"></script>
 </body>
 </html>

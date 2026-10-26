@@ -28,7 +28,7 @@
       <h1>Assistance <span>Volunteer Management</span></h1>
       <p class="lead">Request help, match it with available volunteers, and follow every request on the campus map from start to finish.</p>
     </div>
-    <svg class="art-svg" viewBox="0 0 560 440" role="img" aria-label="Illustration of volunteers helping students on campus with a request card and live map">
+    <svg class="art-svg" aria-hidden="true" viewBox="0 0 560 440" role="img" aria-label="Illustration of volunteers helping students on campus with a request card and live map">
       <defs>
         <radialGradient id="aGlow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ffffff" stop-opacity=".28"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
       </defs>
@@ -169,7 +169,7 @@
         <div><b>{{ user.full_name }}</b><small>{{ role|title }}</small></div>
       </div>
       <div class="theme-row dark-row"><span>Dark mode</span><span class="switch" role="switch" tabindex="0" aria-label="Toggle dark mode" onclick="toggleTheme()"></span></div>
-      <button type="button" class="btn btn-ghost btn-block logout" id="logoutBtn">{{ logout_icon }} Logout</button>
+      <button type="button" class="btn btn-ghost btn-block logout" id="logoutBtn">{{ logout_icon }}<span class="logout-label" style="color: #fff">Logout</span></button>
     </div>
   </aside>
 

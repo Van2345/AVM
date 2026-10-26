@@ -40,14 +40,33 @@ async function api(url, opts = {}) {
     init.headers['X-CSRF-Token'] = APP.csrf;
     init.body = JSON.stringify(opts.body || {});
   }
-  let res, data;
+  let res;
   try {
     res = await fetch(url, init);
-    data = await res.json();
-  } catch (e) {
-    return { success: false, message: 'Unable to reach the application server.' };
+  } catch {
+    return { success: false, message: 'Could not connect to the server. Check your connection and try again.' };
   }
   if (res.status === 401 && APP.user) { location.reload(); }
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    let message = 'The server returned an unexpected response. Please try again.';
+    if (!res.ok) {
+      if (res.status === 403) message = 'Your request was blocked. Refresh the page and try again.';
+      else if (res.status === 404) message = 'This page could not be found. Refresh and try again.';
+      else if (res.status === 429) message = 'Too many requests. Please wait a moment and try again.';
+      else if (res.status >= 500) message = 'The server encountered a problem. Please try again.';
+      else message = 'Your request could not be completed. Please check your information and try again.';
+    }
+    return { success: false, message };
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { success: false, message: 'The server returned an unexpected response. Please try again.' };
+  }
+  if (!res.ok) {
+    return { ...data, success: false, message: data.message || 'Your request could not be completed. Please try again.' };
+  }
   return data;
 }
 
@@ -395,6 +414,39 @@ function clearPin() {
   $('#rq_lat').value = ''; $('#rq_lng').value = '';
   if (pinMarker && pick) { pick.removeLayer(pinMarker); pinMarker = null; }
 }
+function showRequestError(message) {
+  const msg = $('#reqMsg');
+  const field = [
+    [/requester name/i, 'rq_name'],
+    [/contact number/i, 'rq_contact'],
+    [/assistance type/i, 'rq_type'],
+    [/urgency/i, 'rq_urgency'],
+    [/location/i, 'rq_location'],
+    [/date and time/i, 'rq_time'],
+    [/description/i, 'rq_desc'],
+    [/map coordinates/i, 'rq_lat'],
+  ].find(([pattern]) => pattern.test(message));
+  msg.textContent = message;
+  msg.className = 'auth-msg err';
+  if (field) {
+    const input = $('#' + field[1]);
+    input.classList.add('invalid');
+    input.setAttribute('aria-invalid', 'true');
+    input.focus();
+  }
+}
+function clearRequestError(event) {
+  const input = event.target;
+  if (!input.matches('input, select, textarea')) return;
+  input.classList.remove('invalid');
+  input.removeAttribute('aria-invalid');
+  const msg = $('#reqMsg');
+  if (msg.classList.contains('err')) {
+    const remaining = $$('.invalid', $('#reqForm')).length;
+    msg.textContent = remaining ? 'Please correct the highlighted fields.' : '';
+    if (!remaining) msg.className = 'auth-msg';
+  }
+}
 function initPicker() {
   if (!$('#rq_time').value) $('#rq_time').value = nowLocal();
   if (pick) { setTimeout(() => pick.invalidateSize(), 120); return; }
@@ -405,6 +457,8 @@ function initPicker() {
   setTimeout(() => pick.invalidateSize(), 120);
 }
 if ($('#reqForm')) {
+  $('#reqForm').addEventListener('input', clearRequestError);
+  $('#reqForm').addEventListener('change', clearRequestError);
   $('#clearPin').addEventListener('click', clearPin);
   $('#useGps').addEventListener('click', () => {
     if (!navigator.geolocation) return toast('Location is not supported on this device.', 'err');
@@ -419,28 +473,41 @@ if ($('#reqForm')) {
       urgency: $('#rq_urgency').value, location: $('#rq_location').value.trim(), needed_at: $('#rq_time').value,
       description: $('#rq_desc').value.trim(), latitude: $('#rq_lat').value, longitude: $('#rq_lng').value,
     };
-    $$('.invalid', e.target).forEach((x) => x.classList.remove('invalid'));
-    const bad = [];
-    if (f.requester_name.length < 2) bad.push('rq_name');
-    if (!CONTACT_RE.test(f.contact)) bad.push('rq_contact');
-    if (!f.assistance_type) bad.push('rq_type');
-    if (f.location.length < 3) bad.push('rq_location');
-    if (!f.needed_at) bad.push('rq_time');
-    if (f.description.length < 5) bad.push('rq_desc');
+    $$('.invalid', e.target).forEach((x) => {
+      x.classList.remove('invalid');
+      x.removeAttribute('aria-invalid');
+    });
+    const checks = [
+      ['rq_name', f.requester_name.length >= 2, 'requester name'],
+      ['rq_contact', CONTACT_RE.test(f.contact), 'contact number'],
+      ['rq_type', Boolean(f.assistance_type), 'assistance type'],
+      ['rq_location', f.location.length >= 3, 'location'],
+      ['rq_time', Boolean(f.needed_at), 'date and time'],
+      ['rq_desc', f.description.length >= 5, 'description'],
+    ];
+    const bad = checks.filter(([, valid]) => !valid);
     if (bad.length) {
-      bad.forEach((id) => $('#' + id).classList.add('invalid'));
-      msg.textContent = 'Please complete all required fields correctly.'; msg.className = 'auth-msg err';
+      bad.forEach(([id]) => {
+        const input = $('#' + id);
+        input.classList.add('invalid');
+        input.setAttribute('aria-invalid', 'true');
+      });
+      showRequestError('Please check the highlighted fields: ' + bad.map(([, , label]) => label).join(', ') + '.');
+      $('#' + bad[0][0]).focus();
       return;
     }
     msg.textContent = ''; msg.className = 'auth-msg';
     const btn = $('#reqSubmit'); btn.disabled = true;
-    const res = await api('/api/requests/create/', { method: 'POST', body: f });
-    btn.disabled = false;
-    if (res.success) {
-      toast(res.message + ' Your Request ID is ' + res.request_code + '.');
-      e.target.reset(); $('#rq_name').value = APP.user.name; clearPin(); $('#rq_time').value = nowLocal();
-      show('dash');
-    } else { msg.textContent = res.message || 'Unable to save data.'; msg.className = 'auth-msg err'; }
+    try {
+      const res = await api('/api/requests/create/', { method: 'POST', body: f });
+      if (res.success) {
+        toast(res.message + ' Your Request ID is ' + res.request_code + '.');
+        e.target.reset(); $('#rq_name').value = APP.user.name; clearPin(); $('#rq_time').value = nowLocal();
+        show('dash');
+      } else showRequestError(res.message || 'Unable to submit your request. Please try again.');
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 

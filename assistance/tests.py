@@ -34,6 +34,7 @@ class ApplicationTests(TestCase):
         self.client.force_login(requester)
         response = self.client.get("/")
         self.assertContains(response, "Request Help")
+        self.assertContains(response, 'class="logout-label" style="color: #fff">Logout</span>')
         self.assertNotContains(response, 'id="m_manage"')
         self.assertNotContains(response, 'id="p_manage"')
         self.assertNotContains(response, "Add volunteer")

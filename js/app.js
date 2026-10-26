@@ -34,7 +34,7 @@ function toast(msg, type) {
 }
 async function api(url, opts = {}) {
   const method = opts.method || 'GET';
-  const init = { method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
+  const init = { method, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
   if (method !== 'GET') {
     init.headers['Content-Type'] = 'application/json';
     init.headers['X-CSRF-Token'] = APP.csrf;
@@ -226,6 +226,7 @@ window.show = function (name) {
 const refresh = () => { if (loaders[current]) loaders[current](); };
 
 $('#logoutBtn').addEventListener('click', async () => {
+  if ($('#startLocationShare')) await stopVolunteerLocationSharing();
   await api('/api/auth/logout/', { method: 'POST', body: {} });
   history.replaceState(null, '', location.pathname);
   location.reload();
@@ -347,16 +348,20 @@ async function loadDashboard() {
 
 /* ---------- live map ---------- */
 let map, layerReq, layerVol;
+const requestMarkers = new Map();
+const volunteerMarkers = new Map();
+const volunteerAccuracyCircles = new Map();
 const REQ_COLORS = { PENDING: '#eab308', APPROVED: '#3b82f6', ASSIGNED: '#06b6d4', ONGOING: '#7c3aed' };
 const VOL_COLORS = { AVAILABLE: '#10b981', BUSY: '#f97316', UNAVAILABLE: '#94a3b8' };
+const LIVE_LOCATION_STALE_MS = 60000;
+const MAP_REFRESH_INTERVAL_MS = 10000;
+let mapLoading = false;
+let mapHasFittedLocations = false;
+let ownLocationMarker, ownAccuracyCircle;
 function leafletReady(el) {
   if (typeof L !== 'undefined') return true;
   el.innerHTML = '<p class="muted" style="padding:20px">The map library could not be loaded. Check your internet connection.</p>';
   return false;
-}
-function fallbackPos(id) {
-  const a = ((id * 137.5) % 360) * Math.PI / 180, d = 0.0006 + (id % 5) * 0.0002;
-  return [CAMPUS[0] + Math.sin(a) * d, CAMPUS[1] + Math.cos(a) * d];
 }
 function initMap() {
   if (map) { map.invalidateSize(); return true; }
@@ -370,33 +375,291 @@ function initMap() {
   const items = Object.keys(REQ_COLORS).map((k) => '<span><i style="background:' + REQ_COLORS[k] + '"></i>Request ' + cap(k) + '</span>');
   if (ROLE === 'ADMIN') items.push('<span><i style="background:' + VOL_COLORS.AVAILABLE + '"></i>Volunteer available</span><span><i style="background:' + VOL_COLORS.BUSY + '"></i>Volunteer busy</span>');
   items.unshift('<span><i style="background:#7c3aed"></i>Campus</span>');
+  if (ROLE === 'ADMIN') items.push('<span><i style="background:#64748b"></i>Last known location</span>');
   $('#legend').innerHTML = items.join('');
   return true;
 }
-async function loadMap() {
-  if (!initMap()) return;
-  setTimeout(() => map.invalidateSize(), 120);
-  const jobs = [api('/api/requests/?map=1')];
-  if (ROLE === 'ADMIN') jobs.push(api('/api/volunteers/?map=1'));
-  const [rq, vl] = await Promise.all(jobs);
-  layerReq.clearLayers(); layerVol.clearLayers();
-  if (rq && rq.success) {
-    rq.requests.forEach((r) => {
-      const pos = r.latitude !== null && r.longitude !== null ? [r.latitude, r.longitude] : fallbackPos(r.id);
-      L.circleMarker(pos, { radius: 8, color: '#ffffff', weight: 2, fillColor: REQ_COLORS[r.status] || '#64748b', fillOpacity: 0.95 })
-        .bindPopup('<b>Request ID: ' + esc(r.request_code) + '</b><br>Type: ' + esc(r.assistance_type) + '<br>Status: ' + esc(r.status) + '<br>Urgency: ' + esc(r.urgency) + '<br>Location: ' + esc(r.location))
-        .addTo(layerReq);
-    });
-  }
-  if (vl && vl.success) {
-    vl.volunteers.forEach((v) => {
-      L.circleMarker([Number(v.latitude), Number(v.longitude)], { radius: 6, color: '#0f172a', weight: 2, fillColor: VOL_COLORS[v.status] || '#94a3b8', fillOpacity: 1 })
-        .bindPopup('<b>Volunteer: ' + esc(v.volunteer_code) + '</b><br>' + esc(v.full_name) + '<br>Role: ' + esc(v.skill) + '<br>Status: ' + esc(v.status))
-        .addTo(layerVol);
-    });
+function reconcileMarkers(group, registry, items, renderMarker, removeExtra) {
+  const seen = new Set();
+  items.forEach((item) => {
+    if (item.latitude === null || item.latitude === undefined ||
+        item.longitude === null || item.longitude === undefined) return;
+    const position = [Number(item.latitude), Number(item.longitude)];
+    if (!position.every(Number.isFinite)) return;
+    const key = item.id;
+    seen.add(key);
+    const existing = registry.get(key);
+    if (existing) {
+      existing.marker.setLatLng(position);
+      renderMarker(existing.marker, item);
+    } else {
+      const marker = renderMarker(L.circleMarker(position), item);
+      marker.addTo(group);
+      registry.set(key, { marker });
+    }
+  });
+  registry.forEach((entry, key) => {
+    if (seen.has(key)) return;
+    group.removeLayer(entry.marker);
+    if (removeExtra) removeExtra(key);
+    registry.delete(key);
+  });
+}
+function fitMapToLocations() {
+  const markers = [...requestMarkers.values(), ...volunteerMarkers.values()]
+    .map((entry) => entry.marker);
+  if (ownLocationMarker) markers.push(ownLocationMarker);
+  if (markers.length) map.fitBounds(L.featureGroup(markers).getBounds().pad(0.15), { maxZoom: 17 });
+  else map.setView(CAMPUS, 16);
+}
+function updateOwnLocation(position) {
+  if (!map || !layerVol) return;
+  const latLng = [position.coords.latitude, position.coords.longitude];
+  const accuracy = Math.max(0, Number(position.coords.accuracy) || 0);
+  if (ownAccuracyCircle) ownAccuracyCircle.setLatLng(latLng).setRadius(accuracy);
+  else ownAccuracyCircle = L.circle(latLng, { radius: accuracy, color: '#7c3aed', weight: 1, fillOpacity: 0.08 }).addTo(layerVol);
+  if (ownLocationMarker) ownLocationMarker.setLatLng(latLng);
+  else ownLocationMarker = L.circleMarker(latLng, { radius: 8, color: '#ffffff', weight: 2, fillColor: '#7c3aed', fillOpacity: 1 }).addTo(layerVol);
+  ownLocationMarker.bindPopup('<b>Your live location</b><br>GPS accuracy: ±' + Math.round(accuracy) + ' m');
+  if (!mapHasFittedLocations) {
+    fitMapToLocations();
+    mapHasFittedLocations = true;
   }
 }
+async function loadMap() {
+  if (!initMap() || mapLoading) return;
+  mapLoading = true;
+  setTimeout(() => map.invalidateSize(), 120);
+  const status = $('#mapStatus');
+  try {
+    const jobs = [api('/api/requests/?map=1')];
+    if (ROLE === 'ADMIN') jobs.push(api('/api/volunteers/?map=1'));
+    const [rq, vl] = await Promise.all(jobs);
+    let missingRequestPins = 0;
+    const failures = [];
+    if (rq && rq.success) {
+      rq.requests.forEach((r) => {
+        if (r.latitude === null || r.longitude === null) missingRequestPins += 1;
+      });
+      reconcileMarkers(layerReq, requestMarkers, rq.requests, (marker, r) => {
+        marker.setStyle({
+          radius: 8,
+          color: '#ffffff',
+          weight: 2,
+          fillColor: REQ_COLORS[r.status] || '#64748b',
+          fillOpacity: 0.95,
+        });
+        marker.bindPopup('<b>Request ID: ' + esc(r.request_code) + '</b><br>Type: ' +
+          esc(r.assistance_type) + '<br>Status: ' + esc(r.status) + '<br>Urgency: ' +
+          esc(r.urgency) + '<br>Location: ' + esc(r.location) +
+          (r.latitude === null || r.longitude === null ? '<br><em>No map pin provided</em>' : ''));
+        return marker;
+      });
+    } else failures.push(rq && rq.message ? rq.message : 'Requests could not be refreshed.');
+    if (ROLE === 'ADMIN') {
+      if (vl && vl.success) {
+        reconcileMarkers(layerVol, volunteerMarkers, vl.volunteers, (marker, v) => {
+          const updatedAt = v.location_updated_at ? Date.parse(v.location_updated_at) : NaN;
+          const age = Date.now() - updatedAt;
+          const isLive = Number.isFinite(updatedAt) && age >= 0 && age <= LIVE_LOCATION_STALE_MS;
+          const color = isLive ? (VOL_COLORS[v.status] || '#94a3b8') : '#64748b';
+          marker.setStyle({
+            radius: 7,
+            color: '#ffffff',
+            weight: 2,
+            fillColor: color,
+            fillOpacity: isLive ? 1 : 0.7,
+          });
+          const freshness = isLive ? 'Live now' : (v.location_updated_at ? 'Last seen ' + fmtDate(v.location_updated_at) : 'Admin-entered location; not live');
+          const accuracy = v.location_accuracy === null || v.location_accuracy === undefined
+            ? '' : '<br>GPS accuracy: ±' + Math.round(v.location_accuracy) + ' m';
+          if (v.location_accuracy && Number(v.location_accuracy) > 0 && Number(v.location_accuracy) <= 2000) {
+            const radius = Number(v.location_accuracy);
+            const circle = volunteerAccuracyCircles.get(v.id);
+            if (circle) circle.setLatLng(marker.getLatLng()).setRadius(radius).setStyle({ color, fillColor: color });
+            else volunteerAccuracyCircles.set(
+              v.id,
+              L.circle(marker.getLatLng(), { radius, color, weight: 1, fillColor: color, fillOpacity: 0.08 }).addTo(layerVol),
+            );
+          } else if (volunteerAccuracyCircles.has(v.id)) {
+            layerVol.removeLayer(volunteerAccuracyCircles.get(v.id));
+            volunteerAccuracyCircles.delete(v.id);
+          }
+          marker.bindPopup('<b>Volunteer: ' + esc(v.volunteer_code) + '</b><br>' +
+            esc(v.full_name) + '<br>Role: ' + esc(v.skill) + '<br>Status: ' +
+            esc(v.status) + '<br>' + esc(freshness) + accuracy);
+          return marker;
+        }, (id) => {
+          const circle = volunteerAccuracyCircles.get(id);
+          if (circle) layerVol.removeLayer(circle);
+          volunteerAccuracyCircles.delete(id);
+        });
+      } else failures.push(vl && vl.message ? vl.message : 'Volunteer locations could not be refreshed.');
+    }
+    if (!mapHasFittedLocations && requestMarkers.size + volunteerMarkers.size) {
+      fitMapToLocations();
+      mapHasFittedLocations = true;
+    }
+    const updated = (failures.length ? 'Refresh attempted ' : 'Updated ') +
+      new Date().toLocaleTimeString('en-PH');
+    const missing = missingRequestPins ? ' · ' + missingRequestPins + ' request(s) without map pins' : '';
+    status.textContent = failures.length
+      ? failures.join(' ') + ' ' + updated + missing
+      : updated + missing + ' · Refreshes every 10 seconds';
+  } finally {
+    mapLoading = false;
+  }
+}
+if ($('#refreshMap')) $('#refreshMap').addEventListener('click', loadMap);
+if ($('#fitMap')) $('#fitMap').addEventListener('click', fitMapToLocations);
 
+/* ---------- volunteer live location (explicit opt-in) ---------- */
+let locationWatchId = null;
+let locationHeartbeat = null;
+let latestGpsFix = null;
+let lastSentGpsFix = null;
+let lastLocationSentAt = 0;
+let locationSessionId = 0;
+let pendingLocationSessions = new Set();
+const pendingLocationRequests = new Map();
+const LOCATION_UPDATE_INTERVAL_MS = 25000;
+const LOCATION_MIN_MOVEMENT_METERS = 15;
+function setLocationShareStatus(message, isError = false) {
+  const status = $('#locationShareStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('error-text', isError);
+}
+function distanceBetween(first, second) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const lat1 = radians(first.coords.latitude), lat2 = radians(second.coords.latitude);
+  const dLat = lat2 - lat1, dLng = radians(second.coords.longitude - first.coords.longitude);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+async function sendVolunteerLocation(position, sessionId) {
+  if (sessionId !== locationSessionId) return;
+  latestGpsFix = position;
+  updateOwnLocation(position);
+  if (pendingLocationSessions.has(sessionId)) return;
+  const now = Date.now();
+  const moved = lastSentGpsFix ? distanceBetween(lastSentGpsFix, position) : Infinity;
+  const movementThreshold = Math.max(
+    LOCATION_MIN_MOVEMENT_METERS,
+    Math.min(50, Number(position.coords.accuracy) / 2 || LOCATION_MIN_MOVEMENT_METERS),
+  );
+  if (lastSentGpsFix && now - lastLocationSentAt < 10000 && moved < 100) return;
+  if (lastSentGpsFix && moved < movementThreshold && now - lastLocationSentAt < LOCATION_UPDATE_INTERVAL_MS) return;
+  pendingLocationSessions.add(sessionId);
+  try {
+    const request = api('/api/volunteers/location/', {
+      method: 'POST',
+      body: {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+      },
+    });
+    pendingLocationRequests.set(sessionId, request);
+    const result = await request;
+    if (sessionId !== locationSessionId) return;
+    if (!result.success) {
+      setLocationShareStatus(result.message || 'Could not update your location. Check your connection and try again.', true);
+      return;
+    }
+    lastSentGpsFix = position;
+    lastLocationSentAt = Date.now();
+    setLocationShareStatus('Sharing live location · GPS accuracy ±' + Math.round(position.coords.accuracy) + ' m');
+  } finally {
+    pendingLocationSessions.delete(sessionId);
+    pendingLocationRequests.delete(sessionId);
+  }
+}
+async function handleLocationError(error, sessionId) {
+  if (sessionId !== locationSessionId) return;
+  const messages = {
+    1: 'Location permission was denied. Allow location access in your browser settings to share.',
+    2: 'Your current location is unavailable. Move to an area with a clearer GPS signal.',
+    3: 'Getting your location timed out. Waiting for another GPS reading.',
+  };
+  if (error.code === 1) {
+    await stopVolunteerLocationSharing();
+    setLocationShareStatus(messages[1], true);
+    return;
+  }
+  setLocationShareStatus(messages[error.code] || 'Unable to get your location.', true);
+}
+function startVolunteerLocationSharing() {
+  if (!navigator.geolocation) {
+    setLocationShareStatus('This browser does not support location sharing.', true);
+    return;
+  }
+  if (!window.isSecureContext) {
+    setLocationShareStatus('Location sharing requires HTTPS or localhost.', true);
+    return;
+  }
+  const start = $('#startLocationShare'), stop = $('#stopLocationShare');
+  start.disabled = true;
+  setLocationShareStatus('Waiting for GPS permission and a location fix…');
+  const sessionId = ++locationSessionId;
+  lastSentGpsFix = null;
+  lastLocationSentAt = 0;
+  try {
+    locationWatchId = navigator.geolocation.watchPosition(
+      (position) => sendVolunteerLocation(position, sessionId),
+      (error) => handleLocationError(error, sessionId),
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 },
+    );
+  } catch {
+    start.disabled = false;
+    setLocationShareStatus('Your browser could not start location sharing. Check its location permissions.', true);
+    return;
+  }
+  stop.hidden = false;
+  locationHeartbeat = setInterval(() => {
+    if (latestGpsFix && Date.now() - latestGpsFix.timestamp < 60000) sendVolunteerLocation(latestGpsFix, sessionId);
+  }, LOCATION_UPDATE_INTERVAL_MS);
+}
+async function stopVolunteerLocationSharing(clearServer = true) {
+  const wasSharing = locationWatchId !== null;
+  const activeSession = locationSessionId;
+  const pendingRequest = pendingLocationRequests.get(activeSession);
+  locationSessionId += 1;
+  if (locationWatchId !== null) navigator.geolocation.clearWatch(locationWatchId);
+  if (locationHeartbeat !== null) clearInterval(locationHeartbeat);
+  locationWatchId = null;
+  locationHeartbeat = null;
+  latestGpsFix = null;
+  lastSentGpsFix = null;
+  lastLocationSentAt = 0;
+  if (ownLocationMarker && layerVol) layerVol.removeLayer(ownLocationMarker);
+  if (ownAccuracyCircle && layerVol) layerVol.removeLayer(ownAccuracyCircle);
+  ownLocationMarker = null;
+  ownAccuracyCircle = null;
+  const start = $('#startLocationShare'), stop = $('#stopLocationShare');
+  if (stop) stop.hidden = true;
+  if (wasSharing && clearServer) {
+    if (start) start.disabled = true;
+    setLocationShareStatus('Stopping sharing and clearing your last shared location…');
+    if (pendingRequest) await pendingRequest;
+    const result = await api('/api/volunteers/location/', { method: 'POST', body: { action: 'clear' } });
+    if (start) start.disabled = false;
+    setLocationShareStatus(
+      result.success
+        ? 'Location sharing is off. Your last shared location was cleared from the map.'
+        : (result.message || 'Sharing is off, but your last location could not be cleared. It will appear as stale.'),
+      !result.success,
+    );
+  } else {
+    if (start) start.disabled = false;
+    setLocationShareStatus('Location sharing is off. Your last position will be marked stale shortly.');
+  }
+}
+if ($('#startLocationShare')) {
+  $('#startLocationShare').addEventListener('click', startVolunteerLocationSharing);
+  $('#stopLocationShare').addEventListener('click', stopVolunteerLocationSharing);
+  window.addEventListener('pagehide', () => stopVolunteerLocationSharing(false));
+}
 /* ---------- request form ---------- */
 let pick, pinMarker;
 function nowLocal() {
@@ -626,6 +889,11 @@ if ($('#p_manage')) {
 }
 
 /* ---------- start ---------- */
-setInterval(() => { if (!document.hidden && !modal.classList.contains('open') && (current === 'dash' || current === 'mapview')) refresh(); }, 30000);
+setInterval(() => {
+  if (!document.hidden && !modal.classList.contains('open') && current === 'mapview') loadMap();
+}, MAP_REFRESH_INTERVAL_MS);
+setInterval(() => {
+  if (!document.hidden && !modal.classList.contains('open') && current === 'dash') refresh();
+}, 30000);
 show((location.hash || '#dash').slice(1));
 })();

@@ -214,7 +214,24 @@
     <!-- LIVE MAP -->
     <section class="page" id="p_mapview">
       <div class="card">
-        <h3>Live Map</h3>
+        <div class="map-toolbar">
+          <h3>Live Map</h3>
+          <div class="map-actions">
+            <span id="mapStatus" class="muted small" aria-live="polite">Map updates every 10 seconds.</span>
+            <button type="button" class="btn btn-ghost" id="refreshMap">Refresh</button>
+            <button type="button" class="btn btn-ghost" id="fitMap">Fit locations</button>
+          </div>
+        </div>
+{% if show_location_sharing %}
+        <div class="location-share">
+          <p class="small">Live sharing is optional. Only administrators can see your location while sharing is on. Your latest position replaces the previous one; location history is not stored.</p>
+          <div class="map-actions">
+            <button type="button" class="btn btn-violet" id="startLocationShare">Share my live location</button>
+            <button type="button" class="btn btn-ghost" id="stopLocationShare" hidden>Stop sharing</button>
+            <span id="locationShareStatus" class="muted small" role="status">Location sharing is off.</span>
+          </div>
+        </div>
+{% endif %}
         <div id="map"></div>
         <div class="legend" id="legend"></div>
       </div>

@@ -27,6 +27,16 @@ from the administrator dashboard.
 For local development, Django uses SQLite by default. To use PostgreSQL or
 another supported database, set `DATABASE_URL`.
 
+## Live map and volunteer location
+
+The live map refreshes request and volunteer markers every 10 seconds. Requests
+without a pinned map location are not plotted at invented coordinates.
+Volunteers can opt in to GPS sharing from **Live Map**; their browser must allow
+location access, and the site must be served over HTTPS (localhost also works).
+Only administrators can see volunteer locations. The map shows GPS accuracy and
+marks old positions as last known; choosing **Stop sharing** clears the last
+shared point. The app stores only the latest point, not a location history.
+
 ## Publish the source to GitHub
 
 After reviewing the changes, commit and push them to the existing `origin`

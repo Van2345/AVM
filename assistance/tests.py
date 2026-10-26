@@ -74,6 +74,91 @@ class ApplicationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["requests"], [])
 
+    def test_volunteer_can_publish_own_live_location(self):
+        volunteer_user = self.create_user("live.volunteer", User.Role.VOLUNTEER)
+        volunteer = Volunteer.objects.create(
+            user=volunteer_user,
+            volunteer_code="V-0002",
+            full_name="Live Volunteer",
+            contact="09171234567",
+            skill="First aid",
+            availability="Weekdays",
+        )
+        self.client.force_login(volunteer_user)
+        response = self.post_json(
+            self.client,
+            "/api/volunteers/location/",
+            {"latitude": 14.6255, "longitude": 121.1222, "accuracy": 12.4},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        volunteer.refresh_from_db()
+        self.assertEqual(float(volunteer.latitude), 14.6255)
+        self.assertEqual(float(volunteer.longitude), 121.1222)
+        self.assertEqual(float(volunteer.location_accuracy), 12.4)
+        self.assertIsNotNone(volunteer.location_updated_at)
+        admin = self.create_user("location.admin", User.Role.ADMIN)
+        admin_client = Client()
+        admin_client.force_login(admin)
+        map_response = admin_client.get("/api/volunteers/?map=1")
+        self.assertEqual(map_response.status_code, 200)
+        mapped_volunteer = map_response.json()["volunteers"][0]
+        self.assertEqual(mapped_volunteer["location_accuracy"], 12.4)
+        self.assertIsNotNone(mapped_volunteer["location_updated_at"])
+
+    def test_volunteer_can_clear_last_shared_location(self):
+        volunteer_user = self.create_user("clear.volunteer", User.Role.VOLUNTEER)
+        volunteer = Volunteer.objects.create(
+            user=volunteer_user,
+            volunteer_code="V-0004",
+            full_name="Clear Volunteer",
+            contact="09171234567",
+            skill="First aid",
+            availability="Weekdays",
+            latitude="14.625500",
+            longitude="121.122200",
+            location_accuracy="12.0",
+            location_updated_at=timezone.now(),
+        )
+        self.client.force_login(volunteer_user)
+        response = self.post_json(
+            self.client,
+            "/api/volunteers/location/",
+            {"action": "clear"},
+        )
+        self.assertTrue(response.json()["success"])
+        volunteer.refresh_from_db()
+        self.assertIsNone(volunteer.latitude)
+        self.assertIsNone(volunteer.longitude)
+        self.assertIsNone(volunteer.location_accuracy)
+        self.assertIsNone(volunteer.location_updated_at)
+
+    def test_non_volunteer_cannot_publish_live_location(self):
+        requester = self.create_user("location.requester", User.Role.REQUESTER)
+        self.client.force_login(requester)
+        response = self.post_json(
+            self.client,
+            "/api/volunteers/location/",
+            {"latitude": 14.6255, "longitude": 121.1222, "accuracy": 12},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.json()["success"])
+
+    def test_volunteer_home_offers_explicit_location_sharing(self):
+        volunteer_user = self.create_user("sharing.volunteer", User.Role.VOLUNTEER)
+        Volunteer.objects.create(
+            user=volunteer_user,
+            volunteer_code="V-0003",
+            full_name="Sharing Volunteer",
+            contact="09171234567",
+            skill="First aid",
+            availability="Weekdays",
+        )
+        self.client.force_login(volunteer_user)
+        response = self.client.get("/")
+        self.assertContains(response, 'id="startLocationShare"')
+        self.assertContains(response, "Only administrators can see your location")
+
     def test_map_endpoint_does_not_return_requester_private_data(self):
         requester = self.create_user("requester", User.Role.REQUESTER)
         AssistanceRequest.objects.create(

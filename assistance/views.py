@@ -163,6 +163,12 @@ def serialize_volunteer(item, current_request=None):
         "status": item.status,
         "latitude": float(item.latitude) if item.latitude is not None else None,
         "longitude": float(item.longitude) if item.longitude is not None else None,
+        "location_accuracy": (
+            float(item.location_accuracy) if item.location_accuracy is not None else None
+        ),
+        "location_updated_at": (
+            item.location_updated_at.isoformat() if item.location_updated_at else None
+        ),
         "username": item.user.username if item.user_id else None,
         "current_request": current_request,
     }
@@ -220,6 +226,8 @@ def home(request):
             "app_data": app_data,
             "icons": icons,
             "show_request": role in (User.Role.ADMIN, User.Role.REQUESTER),
+            "show_location_sharing": role == User.Role.VOLUNTEER
+            and Volunteer.objects.filter(user=user).exists(),
             "is_admin": role == User.Role.ADMIN,
             "logout_icon": mark_safe(icons["logout"]),
             "avatar_initial": user.full_name[:1].upper() if user else "",
@@ -697,6 +705,59 @@ def volunteers_api(request):
             ],
         }
     )
+
+
+@require_http_methods(["POST"])
+def update_volunteer_location_api(request):
+    user = actor_or_error(request, User.Role.VOLUNTEER)
+    if isinstance(user, JsonResponse):
+        return user
+    data = parse_body(request)
+    if data is None:
+        return response_error("Invalid location update.")
+    try:
+        volunteer = Volunteer.objects.get(user=user)
+    except Volunteer.DoesNotExist:
+        return response_error(
+            "Your account is not linked to a volunteer profile. Contact an administrator.",
+            404,
+        )
+    if data.get("action") == "clear":
+        volunteer.latitude = None
+        volunteer.longitude = None
+        volunteer.location_accuracy = None
+        volunteer.location_updated_at = None
+        volunteer.save(
+            update_fields=(
+                "latitude",
+                "longitude",
+                "location_accuracy",
+                "location_updated_at",
+            )
+        )
+        return response_ok("Your last shared location was cleared.")
+    latitude, longitude, error = parse_coordinates(data)
+    if error or latitude is None or longitude is None:
+        return response_error(error or "Please provide your current location.")
+    try:
+        accuracy = Decimal(str(data.get("accuracy")))
+    except (InvalidOperation, TypeError, ValueError):
+        return response_error("Invalid location accuracy.")
+    if not accuracy.is_finite() or accuracy < 0 or accuracy > 100000:
+        return response_error("Invalid location accuracy.")
+    volunteer.latitude = latitude
+    volunteer.longitude = longitude
+    volunteer.location_accuracy = accuracy.quantize(Decimal("0.1"))
+    volunteer.location_updated_at = timezone.now()
+    volunteer.save(
+        update_fields=(
+            "latitude",
+            "longitude",
+            "location_accuracy",
+            "location_updated_at",
+        )
+    )
+    return response_ok("Your live location was updated.")
 
 
 @require_http_methods(["POST"])

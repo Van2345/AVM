@@ -14,6 +14,11 @@ urlpatterns = [
     path("api/requests/update/", views.update_request_api, name="update_request"),
     path("api/requests/delete/", views.delete_request_api, name="delete_request"),
     path("api/volunteers/", views.volunteers_api, name="volunteers"),
+    path(
+        "api/volunteers/location/",
+        views.update_volunteer_location_api,
+        name="volunteer_location",
+    ),
     path("api/volunteers/create/", views.create_volunteer_api, name="create_volunteer"),
     path("api/volunteers/update/", views.update_volunteer_api, name="update_volunteer"),
     path("api/volunteers/delete/", views.delete_volunteer_api, name="delete_volunteer"),
